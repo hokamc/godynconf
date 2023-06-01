@@ -19,12 +19,23 @@ type ConfWatcher struct {
 type Conf[T any] struct {
 	p  string
 	vp *atomic.Pointer[*T]
+	tf []IRConf
+}
+
+type TfConf[T, U any] struct {
+	c *Conf[T]
+	tf func(*T) *U
+	vp *atomic.Pointer[*U]
 }
 
 type IConf interface {
+	IRConf
 	Path() string
-	Reload() error
 	ToString() string
+}
+
+type IRConf interface {
+	Reload() error
 }
 
 // --- ConfWatcher
@@ -101,6 +112,7 @@ func NewConf[T any](path string) *Conf[T] {
 	return &Conf[T]{
 		p:  path,
 		vp: &atomic.Pointer[*T]{},
+		tf: make([]IRConf, 0),
 	}
 }
 
@@ -115,6 +127,9 @@ func (c *Conf[T]) Reload() error {
 		return err
 	}
 	c.vp.Store(&r)
+	for _, tfc := range c.tf {
+		tfc.Reload()
+	}
 	return nil
 }
 
@@ -128,4 +143,25 @@ func (c *Conf[T]) ToString() string {
 
 func (c *Conf[T]) Get() *T {
 	return *c.vp.Load()
+}
+
+// --- TfConf
+func NewTfConf[T, U any](c *Conf[T], tf func(*T) *U) *TfConf[T, U] {
+	tfc := &TfConf[T, U]{
+		c: c,
+		tf: tf,
+		vp: &atomic.Pointer[*U]{},
+	}
+	c.tf = append(c.tf, tfc)
+	return tfc
+}
+
+func (tfc *TfConf[T, U]) Reload() error {
+	r := tfc.tf(tfc.c.Get())
+	tfc.vp.Store(&r)
+	return nil
+}
+
+func (tfc *TfConf[T, U]) Get() *U {
+	return *tfc.vp.Load()
 }

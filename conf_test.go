@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/hokamc/godynconf"
-	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
 
@@ -15,6 +15,10 @@ type TestYaml struct {
 	Name   string `yaml:"name"`
 	Age    int    `yaml:"age"`
 	Height int    `yaml:"height"`
+}
+
+type TestTransform struct {
+	NameByAge map[string]int
 }
 
 func TestConf(t *testing.T) {
@@ -29,13 +33,22 @@ func TestConf(t *testing.T) {
 
 	cw := godynconf.NewConfWatcher(godynconf.WithLog())
 	tc := godynconf.NewConf[TestYaml](p)
+	tfc := godynconf.NewTfConf(tc, func(t *TestYaml) *TestTransform {
+		return &TestTransform{
+			NameByAge: map[string]int{
+				t.Name: t.Age,
+			},
+		}
+	})
+
 	cw.Add(tc)
 
-	assert.NotNil(t, tc.Get())
-	assert.Equal(t, 99, tc.Get().Age)
-	assert.Equal(t, 280, tc.Get().Height)
-	assert.Equal(t, "hello word", tc.Get().Name)
-	assert.NoError(t, cw.Start())
+	require.NotNil(t, tc.Get())
+	require.Equal(t, 99, tc.Get().Age)
+	require.Equal(t, 280, tc.Get().Height)
+	require.Equal(t, "hello word", tc.Get().Name)
+	require.Equal(t, 99, tfc.Get().NameByAge["hello word"])
+	require.NoError(t, cw.Start())
 
 	nty = &TestYaml{
 		Age:    98,
@@ -45,15 +58,16 @@ func TestConf(t *testing.T) {
 	writeYaml(t, nty, p)
 	time.Sleep(10 * time.Millisecond)
 
-	assert.NotNil(t, tc.Get())
-	assert.Equal(t, 98, tc.Get().Age)
-	assert.Equal(t, 281, tc.Get().Height)
-	assert.Equal(t, "hello word", tc.Get().Name)
-	assert.NoError(t, cw.Close())
+	require.NotNil(t, tc.Get())
+	require.Equal(t, 98, tc.Get().Age)
+	require.Equal(t, 281, tc.Get().Height)
+	require.Equal(t, "hello word", tc.Get().Name)
+	require.Equal(t, 98, tfc.Get().NameByAge["hello word"])
+	require.NoError(t, cw.Close())
 }
 
 func writeYaml(t *testing.T, nty *TestYaml, p string) {
 	out, err := yaml.Marshal(nty)
-	assert.NoError(t, err)
-	assert.NoError(t, os.WriteFile(p, out, 0644))
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(p, out, 0644))
 }
