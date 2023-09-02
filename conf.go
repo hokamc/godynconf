@@ -1,19 +1,28 @@
 package godynconf
 
 import (
+	"crypto/aes"
+	"crypto/cipher"
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync/atomic"
 
 	"github.com/fsnotify/fsnotify"
 	"gopkg.in/yaml.v3"
 )
 
+const ENCRYPT_PREFIX = "{encrypted}"
+
 type ConfWatcher struct {
 	w  *fsnotify.Watcher
 	cm map[string]IConf
 	hl bool
+	aesKey []byte
+	iv []byte
 }
 
 type Conf[T any] struct {
@@ -35,7 +44,7 @@ type IConf interface {
 }
 
 type IRConf interface {
-	Reload() error
+	Reload(cw *ConfWatcher) error
 }
 
 // --- ConfWatcher
@@ -61,6 +70,23 @@ func WithLog() func(*ConfWatcher) {
 	}
 }
 
+func WithEncrypt(aesKeyHex, ivHex string) func(*ConfWatcher) {
+    aesKey, err := hex.DecodeString(aesKeyHex)
+    if err != nil {
+        log.Fatalln(err)
+    }
+
+    iv, err := hex.DecodeString(ivHex)
+    if err != nil {
+		log.Fatalln(err)
+    }
+
+	return func(cw *ConfWatcher) {
+		cw.aesKey = aesKey
+		cw.iv = iv
+	}
+}
+
 func (cw *ConfWatcher) Start() error {
 	go func() {
 		for {
@@ -71,7 +97,7 @@ func (cw *ConfWatcher) Start() error {
 				}
 				if event.Has(fsnotify.Write) {
 					if c, ok := cw.cm[event.Name]; ok {
-						err := c.Reload()
+						err := c.Reload(cw)
 						if err != nil {
 							log.Println("godynconf fail to reload due to reading file", err)
 						}
@@ -96,7 +122,7 @@ func (cw *ConfWatcher) Close() error {
 }
 
 func (cw *ConfWatcher) Add(c IConf) {
-	err := c.Reload()
+	err := c.Reload(cw)
 	if err != nil {
 		log.Fatalln("godynconf fail to add", err)
 	}
@@ -116,19 +142,42 @@ func NewConf[T any](path string) *Conf[T] {
 	}
 }
 
-func (c *Conf[T]) Reload() error {
+func (c *Conf[T]) Reload(cw *ConfWatcher) error {
 	bs, err := os.ReadFile(c.p)
 	if err != nil {
 		return err
 	}
+
 	r := new(T)
-	err = yaml.Unmarshal(bs, r)
-	if err != nil {
-		return err
+	if cw.aesKey != nil && cw.iv != nil {
+		var data map[interface{}]interface{}
+		err = yaml.Unmarshal(bs, &data)
+		if err != nil {
+			return err
+		}
+		for key, value := range data {
+			strValue, ok := value.(string)
+			if ok && strings.HasPrefix(strValue, ENCRYPT_PREFIX) {
+				out, err := decryptAES256CBC(strings.TrimPrefix(strValue, ENCRYPT_PREFIX), cw.aesKey, cw.iv)
+				if err != nil {
+					return err
+				}
+				data[key] = out
+			}
+		}
+		bs, err = yaml.Marshal(data)
+		if err != nil {
+			return err
+		}
 	}
+
+	if err := yaml.Unmarshal(bs, r); err != nil {
+		return err
+	}	
+
 	c.vp.Store(&r)
 	for _, tfc := range c.tf {
-		tfc.Reload()
+		tfc.Reload(cw)
 	}
 	return nil
 }
@@ -156,7 +205,7 @@ func NewTfConf[T, U any](c *Conf[T], tf func(*T) *U) *TfConf[T, U] {
 	return tfc
 }
 
-func (tfc *TfConf[T, U]) Reload() error {
+func (tfc *TfConf[T, U]) Reload(cw *ConfWatcher) error {
 	r := tfc.tf(tfc.c.Get())
 	tfc.vp.Store(&r)
 	return nil
@@ -164,4 +213,27 @@ func (tfc *TfConf[T, U]) Reload() error {
 
 func (tfc *TfConf[T, U]) Get() *U {
 	return *tfc.vp.Load()
+}
+
+// --- AES
+func decryptAES256CBC(encryptedBase64 string, aesKey []byte, iv []byte) (string, error) {
+    encryptedData, err := base64.StdEncoding.DecodeString(encryptedBase64)
+    if err != nil {
+        return "", err
+    }
+
+    block, err := aes.NewCipher(aesKey)
+    if err != nil {
+        return "", err
+    }
+
+    mode := cipher.NewCBCDecrypter(block, iv)
+    plainText := make([]byte, len(encryptedData))
+    mode.CryptBlocks(plainText, encryptedData)
+	return string(pKCS7PaddingRemove(plainText)), nil
+}
+
+func pKCS7PaddingRemove(data []byte) []byte {
+    padding := int(data[len(data)-1])
+    return data[:len(data)-padding]
 }
