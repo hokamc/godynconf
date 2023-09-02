@@ -18,11 +18,11 @@ import (
 const ENCRYPT_PREFIX = "{encrypted}"
 
 type ConfWatcher struct {
-	w  *fsnotify.Watcher
-	cm map[string]IConf
-	hl bool
+	w      *fsnotify.Watcher
+	cm     map[string]IConf
+	hl     bool
 	aesKey []byte
-	iv []byte
+	iv     []byte
 }
 
 type Conf[T any] struct {
@@ -32,7 +32,7 @@ type Conf[T any] struct {
 }
 
 type TfConf[T, U any] struct {
-	c *Conf[T]
+	c  *Conf[T]
 	tf func(*T) *U
 	vp *atomic.Pointer[*U]
 }
@@ -59,7 +59,9 @@ func NewConfWatcher(opts ...func(*ConfWatcher)) *ConfWatcher {
 		hl: false,
 	}
 	for _, v := range opts {
-		v(cw)
+		if v != nil {
+			v(cw)
+		}
 	}
 	return cw
 }
@@ -71,15 +73,19 @@ func WithLog() func(*ConfWatcher) {
 }
 
 func WithEncrypt(aesKeyHex, ivHex string) func(*ConfWatcher) {
-    aesKey, err := hex.DecodeString(aesKeyHex)
-    if err != nil {
-        log.Fatalln(err)
-    }
+	if aesKeyHex == "" || ivHex == "" {
+		return nil
+	}
 
-    iv, err := hex.DecodeString(ivHex)
-    if err != nil {
+	aesKey, err := hex.DecodeString(aesKeyHex)
+	if err != nil {
 		log.Fatalln(err)
-    }
+	}
+
+	iv, err := hex.DecodeString(ivHex)
+	if err != nil {
+		log.Fatalln(err)
+	}
 
 	return func(cw *ConfWatcher) {
 		cw.aesKey = aesKey
@@ -173,7 +179,7 @@ func (c *Conf[T]) Reload(cw *ConfWatcher) error {
 
 	if err := yaml.Unmarshal(bs, r); err != nil {
 		return err
-	}	
+	}
 
 	c.vp.Store(&r)
 	for _, tfc := range c.tf {
@@ -197,7 +203,7 @@ func (c *Conf[T]) Get() *T {
 // --- TfConf
 func NewTfConf[T, U any](c *Conf[T], tf func(*T) *U) *TfConf[T, U] {
 	tfc := &TfConf[T, U]{
-		c: c,
+		c:  c,
 		tf: tf,
 		vp: &atomic.Pointer[*U]{},
 	}
@@ -217,23 +223,23 @@ func (tfc *TfConf[T, U]) Get() *U {
 
 // --- AES
 func decryptAES256CBC(encryptedBase64 string, aesKey []byte, iv []byte) (string, error) {
-    encryptedData, err := base64.StdEncoding.DecodeString(encryptedBase64)
-    if err != nil {
-        return "", err
-    }
+	encryptedData, err := base64.StdEncoding.DecodeString(encryptedBase64)
+	if err != nil {
+		return "", err
+	}
 
-    block, err := aes.NewCipher(aesKey)
-    if err != nil {
-        return "", err
-    }
+	block, err := aes.NewCipher(aesKey)
+	if err != nil {
+		return "", err
+	}
 
-    mode := cipher.NewCBCDecrypter(block, iv)
-    plainText := make([]byte, len(encryptedData))
-    mode.CryptBlocks(plainText, encryptedData)
+	mode := cipher.NewCBCDecrypter(block, iv)
+	plainText := make([]byte, len(encryptedData))
+	mode.CryptBlocks(plainText, encryptedData)
 	return string(pKCS7PaddingRemove(plainText)), nil
 }
 
 func pKCS7PaddingRemove(data []byte) []byte {
-    padding := int(data[len(data)-1])
-    return data[:len(data)-padding]
+	padding := int(data[len(data)-1])
+	return data[:len(data)-padding]
 }
